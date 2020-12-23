@@ -1,0 +1,187 @@
+#!/usr/bin/bash
+#v1.0 by sandylaw <freelxs@gmail.com> 2020-08-18
+#v1.1 by sandylaw <freelxs@gmail.com> 2020-08-28
+#This script will list the website, get the dir or file url.
+#reference :https://blog.csdn.net/sky619351517/article/details/77016845
+#Eg. webtree [-d|-f] [geturl] $URL
+# shellcheck disable=SC1091
+branch_vline="│   " #Branch vertical line
+#branch_null="    " #null separation branch
+middle_branch_end="├── "
+last_branch_end="└── "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     #the last file branch
+branch_sum=""
+filecount=0
+directorycount=0
+
+function help() {
+    # Display Help
+    echo "Usage:"
+    echo
+    echo "List the contents of http/ftp directories in a tree-like format."
+    echo "Get the http/ftp every dir or file url."
+    echo
+    echo "Syntax:webtree [-d|-f] [geturl] URL"
+    echo "       		-d : only display dir."
+    echo "       		-f : with geturl,return file url."
+    echo "       		geturl : return dir or file url."
+}
+function loadhelp() {
+    if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ "$1" == "-help" ] || [[ -z $* ]]; then
+        help
+        exit 0
+    fi
+}
+loadhelp "$1"
+function check_url() {
+    wget --spider -q -o /dev/null  --tries=1 -T 5 "$1"
+    if ! wget --spider -q -o /dev/null  --tries=1 -T 5 "$1"; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+if [ "$1" == "-d" ]; then
+    if [ "$2" == "geturl" ]; then
+        URL=$3
+        display="d"
+        geturl="u"
+    else
+        URL=$2
+        display="d"
+    fi
+elif [ "$1" == "-f" ]; then
+    if [ "$2" == "geturl" ]; then
+        URL=$3
+        display="f"
+        geturl="u"
+    else
+        URL=$2
+        display="f"
+    fi
+elif [ "$1" == "geturl" ]; then
+    geturl="u"
+    URL=$2
+
+else
+    URL=$1
+fi
+url_basename=$(basename "$URL")
+if [ "${URL: -1}" == "/" ]; then
+    :
+elif ! echo "${url_basename}" | grep -q "\."; then
+    URL=$URL"/"
+else
+    _just_file="yes"
+fi
+
+isurl=$(check_url "$URL")
+if [ "$isurl" == 0 ]; then
+    :
+else
+    echo "Please check the URL: $URL"
+    exit 1
+fi
+
+function webtree() {
+    URL=$1
+    display=$2
+    geturl=$3
+    num=0
+    i=0
+    if [ -z "$_just_file" ]; then
+        read -ra WEBDIR <<< "$(wget -O - "$URL" 2> /dev/null | grep -o -P '(href=.*?>)' | grep -o -P '(?<=href=").*(?=">)' | grep -v "^\?" | grep -v "^\\/" | grep -v "^Name</a>" | grep -v "^Parent Directory$" | sort | uniq | tr "\\n" " ")"
+    else
+        WEBDIR=("$URL")
+    fi
+    for d in ${WEBDIR[*]}; do
+        if [ "${d: -2}" == "./" ]; then
+            unset "WEBDIR[$i]"
+        fi
+        if [ "${d:0:2}" == "./" ]; then
+            WEBDIR[$i]="${d:2}"
+        fi
+        if [ "${d:0:3}" == "../" ]; then
+            WEBDIR[$i]="${d:3}"
+        fi
+        i=$((i + 1))
+    done
+    for d in ${WEBDIR[*]}; do
+        thelastfile=${#WEBDIR[@]}
+        num=$((num + 1))
+        URL=$1
+        #sleep 100
+        if [[ $thelastfile -eq $num ]]; then
+            if [ "${d: -1}" == "/" ]; then
+                URL=$URL"$d"
+                if [ -z "$geturl" ]; then
+                    echo -e "${branch_sum}${last_branch_end}\\033[1;34m$d\\033[0m"
+                else
+                    if [ "$display" == "d" ]; then
+                        echo -e "$URL"
+                    fi
+                fi
+                directorycount=$((directorycount + 1))
+                branch_sum=${branch_sum}${branch_vline}
+                # 调用自身
+                webtree "$URL" "$display" "$geturl"
+                branch_sum=${branch_sum%${branch_vline}}
+            elif [ "$display" == "d" ]; then
+                :
+            else
+                filecount=$((filecount + 1))
+                if [ -z "$geturl" ]; then
+                    echo -e "${branch_sum}$last_branch_end\\033[1;32m$d\\033[0m"
+                elif [ -n "$_just_file" ]; then
+                    echo "$URL"
+                else
+                    echo "$URL$d"
+                fi
+            fi
+        else
+            if [ "${d: -1}" == "/" ]; then
+                URL=$URL"$d"
+                if [ -z "$geturl" ]; then
+                    echo -e "${branch_sum}${middle_branch_end}\\033[1;34m$d\\033[0m"
+                else
+                    if [ "$display" == "d" ]; then
+                        echo -e "$URL"
+                    fi
+                fi
+                directorycount=$((directorycount + 1))
+                branch_sum=${branch_sum}${branch_vline}
+                # 调用自身
+                webtree "$URL" "$display" "$geturl"
+                branch_sum=${branch_sum%${branch_vline}}
+            elif [ "$display" == "d" ]; then
+                :
+            else
+                filecount=$((filecount + 1))
+                if [ -z "$geturl" ]; then
+                    echo -e "${branch_sum}$middle_branch_end\\033[1;32m$d\\033[0m"
+                elif [ -n "$_just_file" ]; then
+                    echo "$URL"
+                else
+                    echo "$URL$d"
+                fi
+            fi
+
+        fi
+    done
+}
+
+if [ -z "$URL" ]; then
+    echo -e "\\033[1;34m.\\033[0m"
+else
+    #echo -e "\\033[1;34m$1\\033[0m"
+    webtree "$URL" "$display" "$geturl"
+    echo
+    if [[ "$display" == "d" ]]; then
+        echo "$directorycount directories"
+    elif [[ "$display" == "f" ]] && [[ "$geturl" == "u" ]]; then
+        echo "$filecount files"
+    else
+        echo "$directorycount directories,  $filecount files"
+    fi
+fi
+
+rm -rf wget-log

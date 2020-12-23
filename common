@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+#v1.0 by sandylaw <freelxs@gmail.com> 2020-08-17
+
+function diffArr() {
+    new=$1
+    old=$2
+    for i in ${new[*]}; do
+        skip=
+        for j in ${old[*]}; do
+            [[ "$i" == "$j" ]] && {
+                skip=1
+                break
+            }
+        done
+        [[ -n $skip  ]] || diff_new+=("$i")
+    done
+    echo "${diff_new[@]}"
+}
+
+function loadhelp() {
+    if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ "$1" == "-help" ]; then
+        help
+        exit 0
+    fi
+}
+function loadhelpall() {
+    if [ "$1" == "-h" ] || [ "$1" == "--help" ] || [ "$1" == "-help" ] || [ -z "$*" ]; then
+        help
+        exit 0
+    fi
+}
+
+function Install_Required_Packages() {
+    TUSER=$1
+    PWD=$2
+    sudo chmod 644 /etc/passwd
+    sudo chmod 644 /etc/group
+    echo "Installing required packages"
+    sudo apt install openssl gpg dpkg-sig reprepro apache2 cron moreutils httrack rrdtool logrotate -y
+    sudo sed -ri '/updatepackages.sh/d' /etc/crontab
+    cat << EOF | sudo tee -a /etc/crontab
+0  */3   * * *   $TUSER   cd $PWD && bash updatepackages.sh 2>&1|ts >>/home/$TUSER/.cache/apt-repo/apt_repo_updatepackages.log
+30  */3   * * *   $TUSER   cd $PWD && bash updatepackages.sh copy 2>&1|ts >>/home/$TUSER/.cache/apt-repo/apt_repo_updatepackages.log
+EOF
+    sudo systemctl restart cron
+}
+
+function Generate_GPG_KEY() {
+    GPGNAME=$1
+    GPGEMAIL=$2
+    if [[ -d .gnupg ]]; then
+        echo "INFO Copy the old gnupg to the home dir."
+        rsync -av .gnupg ~/
+    fi
+
+    pushd ~ > /dev/null || exit
+    if [ ! -d .gnupg ]; then
+        #    rm -rf .gnupg
+        mkdir -m 0700 .gnupg
+    fi
+    cd .gnupg || exit
+    # touch .gnupg/{pub,sec}ring.gpg
+    if [ -f "${GPGEMAIL}".gpg.key ]; then
+        echo "The ${GPGEMAIL}.gpg.key is exit!"
+        PUBLIC_KEY_URL=$(realpath "${GPGEMAIL}".gpg.key)
+        PASSWD_URL=$(realpath passwd)
+    elif [ ! -f "${GPGEMAIL}".gpg.key ]; then
+        echo "INFO Generating new gpg key"
+        gpg --list-keys
+        PASSPHRASE=$(openssl rand -base64 16)
+        echo "$PASSPHRASE" > passwds
+        PASSWD_URL=$(realpath passwd)
+
+        cat > keydetails << EOF
+    %echo Generating a basic OpenPGP key
+    Key-Type: RSA
+    Key-Length: 4096
+    Subkey-Type: RSA
+    Subkey-Length: 4096
+    Name-Real: $GPGNAME
+    Name-Comment: $GPGNAME
+    Name-Email: $GPGEMAIL
+    Expire-Date: 0
+    Passphrase: $PASSPHRASE
+    %no-ask-passphrase
+    %no-protection
+    %pubring pubring.kbx
+    %secring trustdb.gpg
+    # Do a commit here, so that we can later print "done" :-)
+    %commit
+    %echo done
+EOF
+
+        gpg --verbose --batch --gen-key keydetails
+        #echo "Generate the ASCII Format Public Key"
+        gpg --output "${GPGEMAIL}".gpg.key --armor --export "$GPGEMAIL"
+        PUBLIC_KEY_URL=$(realpath "${GPGEMAIL}".gpg.key)
+        # Set trust to 5 for the key so we can encrypt without prompt.
+        #echo -e "5\ny\n" |  gpg2 --command-fd 0 --expert --edit-key user@1.com trust;
+
+        # Test that the key was created and the permission the trust was set.
+        gpg --list-keys
+        #        echo "The ASCII Format Public key is $PUBLIC_KEY_URL"
+        return "$PUBLIC_KEY_URL"
+        #        echo "The Passphrase is: $PASSPHRASE , saved at $PASSWD_URL"
+        return "$PASSWD_URL"
+        rm keydetails
+    fi
+    popd > /dev/null || exit
+
+}
+
+function Configure_Apache2_with_reprepro() {
+    SERVERNAME=$1
+    APACHE2CONF=/etc/apache2/apache2.conf
+    if [ ! -d /var/www/repos ]; then
+        read -rp "Will you create a symlink to /var/www/repos/? yes or no: " yesno
+        if [[ $yesno == yes ]] || [[ $yesno == y ]] || [[ $yesno == Y ]] || [[ $yesno == YES ]]; then
+            read -rp "Input the soure path:E.g /data" DATA
+            if [[ -d "$DATA" ]]; then
+                sudo ln -s "$DATA" /var/www/repos
+            else
+                echo "Please check your input source path."
+                Configure_Apache2_with_reprepro "$SERVERNAME"
+            fi
+        else
+            sudo mkdir -p /var/www/repos/
+        fi
+    fi
+    # Set the default 80 site to the apt
+    sudo sed -i -r -e "/DocumentRoot/c\\        DocumentRoot /var/www/html" /etc/apache2/sites-available/000-default.conf
+    sudo sed -ri '/^<VirtualHost \*:80>/cListen 99\n<VirtualHost *:99>' /etc/apache2/sites-available/000-default.conf
+    cat << EOF | sudo tee /etc/apache2/sites-available/repos.conf
+<VirtualHost *:80>
+        ServerAdmin webmaster@localhost
+        DocumentRoot /var/www/repos
+        ErrorLog ${APACHE_LOG_DIR}/error.log
+        CustomLog ${APACHE_LOG_DIR}/access.log combined
+</VirtualHost>
+EOF
+
+    if [ -f $APACHE2CONF ]; then
+        if ! grep -q "ServerName" $APACHE2CONF; then
+            echo "ServerName $SERVERNAME" | sudo tee -a $APACHE2CONF > /dev/null
+        elif grep -q "ServerName" $APACHE2CONF; then
+            sudo sed -i -r -e "/^ServerName/cServerName $SERVERNAME" $APACHE2CONF
+        fi
+    fi
+    if [ -f /etc/apache2/conf-available/repos.conf ]; then
+        echo "This is old."
+        sudo rm -rf /etc/apache2/conf-available/repos.conf
+    fi
+    if [ ! -f /etc/apache2/conf-availabe/repos.conf ]; then
+        echo "Now create the repos.conf"
+        sudo touch /etc/apache2/conf-available/repos.conf
+        cat << EOF | sudo tee /etc/apache2/conf-available/repos.conf
+ <Directory /var/www/repos/ >  
+     # We want the user to be able to browse the directory manually  
+     Options Indexes FollowSymLinks Multiviews  
+     Order allow,deny  
+     Allow from all  
+ </Directory>  
+ # This syntax supports several repositories, e.g. one for Debian, one for Ubuntu.  
+ # Replace * with debian, if you intend to support one distribution only.  
+ <Directory "/var/www/repos/*/*/db/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+ <Directory "/var/www/repos/*/*/conf/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+ <Directory "/var/www/repos/*/*/lists/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+ <Directory "/var/www/repos/*/*/logs/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+  <Directory "/var/www/repos/*/*/morguedir/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+  <Directory "/var/www/repos/script/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+ <Directory "/var/www/repos/apt-mirror/">  
+    Order allow,deny  
+    Deny from all  
+ </Directory>
+ <Directory "/var/www/repos/*/*/incoming/">  
+     Order allow,deny  
+     Deny from all  
+ </Directory>  
+
+EOF
+    fi
+    echo "Enable repos site configuration in Apache"
+    sudo a2enconf repos
+    sudo a2ensite repos
+    sudo apache2ctl configtest
+    sudo systemctl daemon-reload
+    sudo systemctl restart apache2.service
+    pwd
+}
+
+Configure_Reprepro() {
+    echo "Configuring Reprepro…………"
+    APTURL=$1
+    REPOS=$2
+    PUBLIC_KEY_URL=$3
+    shift 3
+    CODES=("$@")
+    for apt in ${REPOS[*]}; do
+        sudo mkdir -p "$APTURL"/"$apt"/conf
+    done
+    for apt in ${REPOS[*]}; do
+        if [ -f "$APTURL"/"$apt"/conf/distributions ]; then
+            read -ra exist_codenames <<< "$(grep Codename < "$APTURL"/"$apt"/conf/distributions | awk '{ print $2 }' | tr '\n' ' ')"
+        else
+            exist_codenames=()
+        fi
+        read -ra new_codename <<< "$(diffArr "${CODES[*]}" "${exist_codenames[*]}")"
+        for code in ${new_codename[*]}; do
+            result=$(echo "$code" | grep "/")
+            CODENAME="$code"
+            updatecode="${CODENAME##*/}"
+            if [ mars == "$updatecode" ] || [ venus == "$updatecode" ]; then
+            	updatecode=1000
+            fi
+            LOGCODENAME=$(echo "$code" | tr "/" "-")
+            cat << EOF | sudo tee -a "$APTURL"/"$apt"/conf/distributions
+Origin: UOS Device
+Label: Device
+Suite: $(basename "$APTURL")
+Codename: $CODENAME
+Version: 2020
+Update: $updatecode
+Architectures: i386 amd64 arm64 mips64el sw_64 source
+Components: main contrib non-free
+UDebComponents: main
+Contents: percomponent nocompatsymlink .bz2
+SignWith: $GPGEMAIL
+Description: UOS Device Packages
+DebIndices: Packages Release . .gz /usr/bin/rredtool
+Log: uos_$LOGCODENAME.log
+
+EOF
+
+        done
+
+        if [ -f "$APTURL"/"$apt"/conf/distributions ]; then
+            read     -ra exist_codenames <<< "$(grep Codename < "$APTURL"/"$apt"/conf/distributions | awk '{ print $2 }' | tr '\n' ' ')"
+            dist=$(    basename "$APTURL")
+            for logcode in     ${exist_codenames[*]}; do
+                LOGCODENAME=$(    echo "$logcode" | tr "/" "-")
+                cat     << EOF | sudo tee /etc/logrotate.d/"$dist"_"$apt"_"$LOGCODENAME"
+${APTURL}/${apt}/logs/uos_${LOGCODENAME}.log {
+rotate 12
+monthly
+compress
+missingok
+notifempty
+}
+EOF
+            done
+        fi
+    done
+
+    for apt in ${REPOS[*]}; do
+        cd "$APTURL"/"$apt"/ || exit
+        sudo GNUPGHOME="${PUBLIC_KEY_URL%/*}" reprepro export
+    done
+    # sudo cp "$PUBLIC_KEY_URL" "$APTURL"/devicepackages.key
+}
+
+pause() {
+    read -n1 -rsp $'Press any key to continue or Ctrl+C to exit...\n'
+}
+
+function check_url() {
+    wget --spider -q -o /dev/null  --tries=1 -T 5 "$1"
+    if ! wget --spider -q -o /dev/null  --tries=1 -T 5 "$1"; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
+function add_to_repository() {
+    TUSER=$1
+    REPOSDIR=$2
+    CODENAME=$3
+    COMP=$4
+    DEBDIR=$5
+    COPY=$6
+    DEST_CODE=$7
+    find "$DEBDIR" -name "*.deb" -exec sudo GNUPGHOME=/home/"$TUSER"/.gnupg dpkg-sig --sign builder {} +
+    read -ra debs <<< "$(sudo find "$DEBDIR" -name "*.deb" | tr "\n" " ")"
+    # first remove the exist same packages
+    for deb in ${debs[*]}; do
+        basedebname=$(basename "$deb")
+        debname=${basedebname%%_*}
+        DEBS+=("$debname")
+    done
+
+    find "$DEBDIR" -name "*.deb" -exec sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" includedeb "$CODENAME" {} +
+    read -ra dscs <<< "$(sudo find "$DEBDIR" -name "*.dsc" | tr "\n" " ")"
+
+    for dsc in  ${dscs[*]}; do
+        sudo  GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" includedsc "$CODENAME" "$dsc"
+    done
+    cd "$REPOSDIR" || exit
+    sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro export
+    cd - || exit
+    if [ "$COPY" == "copy" ]; then
+        for dsc in ${dscs[*]}; do
+            basedscname=$(basename "$dsc")
+            dscname=${basedscname%%_*}
+            DSCS+=("$dscname")
+        done
+        if [[ "$DEST_CODE" == "all" ]]; then
+            read -ra codenames <<< "$(grep Codename < "$REPOSDIR"/conf/distributions | awk '{ print $2 }' | tr '\n' ' ')"
+            for _dest in ${codenames[*]}; do
+                echo "${DEBS[@]}" | xargs sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" copy "$_dest" "$CODENAME"
+                for DSC in ${DSCS[*]}; do
+                    sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" copysrc "$_dest" "$CODENAME" "$DSC"
+                done
+            done
+        else
+            for _dest in ${codenames[*]}; do
+                echo "${DEBS[@]}" | xargs sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" copy "$DEST_CODE" "$CODENAME"
+                for DSC in ${DSCS[*]}; do
+                    sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro -C "$COMP" --ask-passphrase -Vb "$REPOSDIR" copysrc "$DEST_CODE" "$CODENAME" "$DSC"
+                done
+            done
+        fi
+    fi
+    cd "$REPOSDIR" || exit
+    sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro export
+}
+
+function list_packages() {
+    TUSER=$1
+    REPOSDIR=$2
+    CODENAME=$3
+
+    sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro --ask-passphrase -Vb "$REPOSDIR" list "$CODENAME"
+
+}
+function remove_packages() {
+    TUSER=$1
+    REPOSDIR=$2
+    CODENAME=$3
+    shift 3
+    PACKAGE=("$*")
+    packages=$(list_packages "$TUSER" "$REPOSDIR" "$CODENAME")
+
+    for P in ${PACKAGE[*]}; do
+        echo "${packages[@]}" | grep -wq "$P" || (
+            echo "Please check the package name:wrong or not exist."
+            echo "$P"
+            exit 1
+        )
+    done
+
+    echo "${PACKAGE[@]}" | xargs sudo GNUPGHOME=/home/"$TUSER"/.gnupg reprepro --morguedir +b/morguedir/"$CODENAME" --ask-passphrase -Vb "$REPOSDIR" remove "${CODENAME}"
+}
+
+function check_word_in_array() {
+    word=$1
+    array=$2
+    for s in ${array[*]}; do
+        if [ "${word}" == "${s}" ]; then
+            result=$word
+            echo "${result}"
+        fi
+    done
+}

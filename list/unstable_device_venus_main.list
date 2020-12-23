@@ -1,0 +1,11 @@
+http://shuttle.corp.deepin.com/cache/repos/venus/release-candidate/dmVudXMyMDIwLTA5LTEx/pool/main/b/base-files/
+http://shuttle.corp.deepin.com/cache/repos/venus/release-candidate/dmVudXMyMDIwLTA5LTEx/pool/main/d/deepin-desktop-base/
+
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-arm64-server/linux-headers-4.19.0-arm64-server_4.19.90-3017_arm64.deb
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-arm64-server/linux-image-4.19.0-arm64-server_4.19.90-3017_arm64.deb
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-arm64-server/linux-image-4.19.0-arm64-server-dbg_4.19.90-3017_arm64.deb
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-arm64-server/linux-libc-dev_4.19.90-3017_arm64.deb
+
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-loongson-3-server/linux-headers-4.19.0-loongson-3-server_4.19.90-3013_mips64el.deb
+http://pools.uniontech.com/server-enterprise/pool/main/l/linux-4.19.0-loongson-3-server/linux-image-4.19.0-loongson-3-server_4.19.90-3013_mips64el.deb
+

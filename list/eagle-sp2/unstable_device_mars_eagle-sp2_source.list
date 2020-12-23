@@ -1,0 +1,4 @@
+deb [arch=amd64,arm64,mips64el] http://pools.uniontech.com/ppa/dde-eagle eagle/sp2 main contrib non-free
+deb [arch=amd64,arm64,mips64el] http://pools.uniontech.com/desktop-professional/ eagle/sp2 main contrib non-free
+deb-src [arch=amd64,arm64,mips64el] http://pools.uniontech.com/ppa/dde-eagle eagle/sp2 main contrib non-free
+deb-src [arch=amd64,arm64,mips64el] http://pools.uniontech.com/desktop-professional/ eagle/sp2 main contrib non-free

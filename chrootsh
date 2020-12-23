@@ -1,0 +1,84 @@
+#!/bin/bash -x
+
+chroot_do() {
+    CHROOT_PATH=$1
+    [[ -z ${CHROOT_PATH} ]] && exit 101
+    shift
+    sudo chroot "${CHROOT_PATH}" /usr/bin/env -i \
+        HOME=/root \
+        USERNAME=root \
+        USER=root \
+        LOGNAME=root \
+        LC_ALL=C \
+        PATH=/sbin:/bin:/usr/bin:/usr/sbin \
+        DEBIAN_FRONTEND=noninteractive \
+        "$@"
+}
+
+postchroot() {
+    CHROOT_PATH=$1
+    [[ -z ${CHROOT_PATH} ]] && exit 101
+    sudo fuser -k "${CHROOT_PATH}"
+    sudo chroot "${CHROOT_PATH}" umount /proc/sys/fs/binfmt_misc || true
+    sudo chroot "${CHROOT_PATH}" umount /proc
+    sudo chroot "${CHROOT_PATH}" umount /sys
+    sudo chroot "${CHROOT_PATH}" umount /dev/pts
+
+    sudo rm -rf "${CHROOT_PATH}/tmp/*" "${CHROOT_PATH}/root/.bash_history"
+    sudo rm -f "${CHROOT_PATH}/etc/hosts"
+    sudo rm -f "${CHROOT_PATH}/etc/hostname"
+    sudo rm -f "${CHROOT_PATH}/etc/resolv.conf"
+    sudo umount "${CHROOT_PATH}/dev"
+    [[ -f "${CHROOT_PATH}/var/lib/dbus/machine-id" ]] && sudo rm -f "${CHROOT_PATH}/var/lib/dbus/machine-id"
+    [[ -f "${CHROOT_PATH}/sbin/initctl" ]] && sudo rm -f "${CHROOT_PATH}/sbin/initctl"
+    [[ -f "${CHROOT_PATH}/usr/sbin/policy-rc.d" ]] && sudo rm -f "${CHROOT_PATH}/usr/sbin/policy-rc.d"
+    sudo chroot "${CHROOT_PATH}" dpkg-divert --rename --remove /sbin/initctl
+}
+
+prechroot() {
+    set -x
+    CHROOT_PATH=$1
+    [[ -z ${CHROOT_PATH} ]] && exit 101
+    sudo cp /etc/hosts "${CHROOT_PATH}/etc/"
+    sudo rm "${CHROOT_PATH}/etc/resolv.conf" -f
+    sudo cp /etc/resolv.conf "${CHROOT_PATH}/etc/"
+    sudo mount --bind /dev "${CHROOT_PATH}/dev"
+
+    sudo chroot "${CHROOT_PATH}" mount -t proc none /proc
+    sudo chroot "${CHROOT_PATH}" mount -t sysfs none /sys
+    sudo chroot "${CHROOT_PATH}" mount -t devpts none /dev/pts
+    sudo chroot "${CHROOT_PATH}" dbus-uuidgen | sudo tee "${CHROOT_PATH}/var/lib/dbus/machine-id"
+    sudo chroot "${CHROOT_PATH}" dpkg-divert --local --rename --add /sbin/initctl
+    sudo chroot "${CHROOT_PATH}" ln -s /bin/true /sbin/initctl
+    # Try to fix udevd still run problem
+    sudo chroot "${CHROOT_PATH}" pkill udevd || true
+    #sudo chroot ${CHROOT_PATH} dpkg-divert --local --rename --add /lib/systemd/systemd-udevd
+
+    #echo -e "#!/bin/sh\nexit 101" | sudo tee ${CHROOT_PATH}/lib/systemd/systemd-udevd
+    echo -e "#!/bin/sh\\nexit 101" | sudo tee "${CHROOT_PATH}/usr/sbin/policy-rc.d"
+    sudo chmod +x "${CHROOT_PATH}/usr/sbin/policy-rc.d"
+}
+
+source_if_exist() {
+    if [[ "$1" == "-exec" ]]; then
+        EXEC="bash"
+    else
+        EXEC="source"
+    fi
+    if [ -f "$1" ]; then ${EXEC} "$1"; fi
+}
+
+chroot_source_if_exist() {
+    BASENAME=$(basename "$1")
+    if [[ -f "$1" ]]; then
+        sudo cp "$1" "${CHROOT_PATH}/tmp/${BASENAME}"
+        sudo chmod +x "${CHROOT_PATH}/tmp/${BASENAME}"
+        prechroot "${CHROOT_PATH}"
+        chroot_do "${CHROOT_PATH}" /tmp/"${BASENAME}"
+        postchroot "${CHROOT_PATH}"
+    fi
+}
+
+pause() {
+    read -n1 -rsp $'Press any key to continue or Ctrl+C to exit...\n'
+}
